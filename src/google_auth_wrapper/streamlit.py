@@ -127,6 +127,7 @@ def google_oauth2_required(scopes: Optional[List[str]] = None):
         """
         Decorator to check if the user is logged in with Google OAuth2 with required scopes.
         """
+
         def wrapper(*args, **kwargs):
             # Get the environment variables
             client_id = os.getenv("GOOGLE_CLIENT_ID")
