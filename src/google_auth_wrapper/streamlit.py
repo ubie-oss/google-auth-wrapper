@@ -12,8 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+This module provides a decorator to check if the user is logged in with Google OAuth2 with required scopes.
+"""
+
 import asyncio
 import os
+from typing import List, Optional
 
 import streamlit as st
 from httpx_oauth.clients.google import GoogleOAuth2
@@ -21,7 +26,9 @@ from httpx_oauth.exceptions import GetIdEmailError
 from httpx_oauth.oauth2 import OAuth2Token
 
 
-async def write_authorization_url(client: GoogleOAuth2, redirect_uri: str) -> str:
+async def write_authorization_url(
+    client: GoogleOAuth2, redirect_uri: str, scopes: Optional[List[str]] = None
+) -> str:
     """
     Generates and returns the authorization URL.
 
@@ -32,15 +39,15 @@ async def write_authorization_url(client: GoogleOAuth2, redirect_uri: str) -> st
     Returns:
         The authorization URL.
     """
-    authorization_url = await client.get_authorization_url(
-        redirect_uri,
-        scope=[
+    if scopes is None:
+        scopes = [
             "https://www.googleapis.com/auth/userinfo.profile",
             "https://www.googleapis.com/auth/userinfo.email",
-            "openid",
-            "https://www.googleapis.com/auth/cloud-platform",
-            "https://www.googleapis.com/auth/bigquery.readonly",
-        ],
+        ]
+
+    authorization_url = await client.get_authorization_url(
+        redirect_uri,
+        scope=scopes,
         extras_params={
             "access_type": "offline",
             "prompt": "select_account",
@@ -105,83 +112,85 @@ def _display_login_prompt(authorization_url: str, error_message: str | None = No
     )
 
 
-def google_oauth2_required(func):
+def google_oauth2_required(scopes: Optional[List[str]] = None):
     """
-    Decorator to check if the user is logged in with Google OAuth2.
+    Decorator to check if the user is logged in with Google OAuth2 with required scopes.
 
     If the user is logged in, the decorated function is executed.
     Otherwise, a login prompt is displayed.
+
+    Args:
+        scopes: List of Google API scopes to request during authentication.
     """
 
-    def wrapper(*args, **kwargs):
-        client_id = os.getenv("GOOGLE_CLIENT_ID")
-        client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
-        redirect_uri = os.getenv("REDIRECT_URI")
+    def decorator(func):
+        """
+        Decorator to check if the user is logged in with Google OAuth2 with required scopes.
+        """
+        def wrapper(*args, **kwargs):
+            # Get the environment variables
+            client_id = os.getenv("GOOGLE_CLIENT_ID")
+            client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+            redirect_uri = os.getenv("REDIRECT_URI")
+            if not client_id or not client_secret or not redirect_uri:
+                raise ValueError(
+                    "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and REDIRECT_URI must be set"
+                )
 
-        if not client_id or not client_secret or not redirect_uri:
-            raise ValueError(
-                "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and REDIRECT_URI must be set"
-            )
-
-        client = GoogleOAuth2(client_id, client_secret)
-
-        if "token" not in st.session_state:
-            st.session_state.token = None
-
-        token: OAuth2Token | None = st.session_state.token
-
-        if token is None:
-            code = st.query_params.get("code")
-
-            if code:
-                try:
-                    token = asyncio.run(
-                        get_access_token(
-                            client=client, redirect_uri=redirect_uri, code=code
+            # Get the token from the query params if it exists
+            client = GoogleOAuth2(client_id, client_secret)
+            token: Optional[OAuth2Token] = st.session_state.get("token", None)
+            if token is None:
+                code = st.query_params.get("code")
+                if code:
+                    try:
+                        token = asyncio.run(
+                            get_access_token(
+                                client=client, redirect_uri=redirect_uri, code=code
+                            )
                         )
-                    )
-                    st.session_state.token = token
-                except (
-                    Exception
-                ):  # Catch specific exceptions if needed, or keep broad for now
+                        st.session_state.token = token
+                    # pylint: disable=broad-exception-caught
+                    except Exception:
+                        authorization_url = asyncio.run(
+                            write_authorization_url(
+                                client=client, redirect_uri=redirect_uri, scopes=scopes
+                            )
+                        )
+                        _display_login_prompt(
+                            authorization_url,
+                            error_message="This account is not allowed or page was refreshed. Please try again.",
+                        )
+                        return None
+                else:
                     authorization_url = asyncio.run(
                         write_authorization_url(
-                            client=client, redirect_uri=redirect_uri
+                            client=client, redirect_uri=redirect_uri, scopes=scopes
                         )
                     )
-                    _display_login_prompt(
-                        authorization_url,
-                        error_message="This account is not allowed or page was refreshed. Please try again.",
-                    )
-                    return  # Important to stop execution here
-
-            else:
+                    _display_login_prompt(authorization_url)
+                    return None
+            # Check if the token is expired
+            if token and token.is_expired():
                 authorization_url = asyncio.run(
-                    write_authorization_url(client=client, redirect_uri=redirect_uri)
+                    write_authorization_url(
+                        client=client, redirect_uri=redirect_uri, scopes=scopes
+                    )
                 )
-                _display_login_prompt(authorization_url)
-                return  # Important to stop execution here
+                _display_login_prompt(
+                    authorization_url,
+                    error_message="Login session has ended, please login again.",
+                )
+                st.session_state.token = None
+                return None
+            if token:
+                st.session_state.token = token
+                user_id, user_email = asyncio.run(get_email(client=client, token=token))
+                st.session_state.user_id = user_id
+                st.session_state.user_email = user_email
+                return func(*args, **kwargs)
+            return None
 
-        if token is not None and token.is_expired():
-            authorization_url = asyncio.run(
-                write_authorization_url(client=client, redirect_uri=redirect_uri)
-            )
-            _display_login_prompt(
-                authorization_url,
-                error_message="Login session has ended, please login again.",
-            )
-            st.session_state.token = None  # Clear expired token
-            return  # Important to stop execution here
+        return wrapper
 
-        if token:  # Token is valid and not expired
-            st.session_state.token = (
-                token  # Ensure token is in session_state after successful login
-            )
-            user_id, user_email = asyncio.run(get_email(client=client, token=token))
-            st.session_state.user_id = user_id
-            st.session_state.user_email = user_email
-            return func(*args, **kwargs)  # Only return here if login is successful
-
-        return None  # Should not reach here in normal execution, but for safety
-
-    return wrapper
+    return decorator

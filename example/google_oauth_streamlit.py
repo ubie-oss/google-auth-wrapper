@@ -12,13 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+This is an example of how to use the google_auth_wrapper with Streamlit.
+"""
 
 import os
 
 import streamlit as st
 from dotenv import load_dotenv
-from google.oauth2 import credentials
 from google.cloud import bigquery
+from google.oauth2 import credentials
 
 from google_auth_wrapper.streamlit import google_oauth2_required
 
@@ -27,8 +30,18 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 print("REDIRECT_URI: ", os.getenv("REDIRECT_URI"))
 
 
-@google_oauth2_required
+@google_oauth2_required(
+    scopes=[
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/cloud-platform",
+        "https://www.googleapis.com/auth/bigquery.readonly",
+    ]
+)
 def main():
+    """
+    Main function to run the Streamlit app.
+    """
     st.title("Google OAuth2 Example App")
 
     if "token" in st.session_state and st.session_state.token:
